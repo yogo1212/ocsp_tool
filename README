@@ -1,0 +1,10 @@
+Manage OCSP data for a certificate.
+
+Example usage:
+Keep test_ocsp.der up to date in a loop (using sleep!).
+printf is called whenever there's an udpate.
+
+```
+./ocsp_tool sustain cert.pem chain.pem test_ocsp.der \
+	printf 'file "%s" was updated, valid until %s (UNIX timestamp)\n'
+```

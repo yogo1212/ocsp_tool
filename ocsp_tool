@@ -1,0 +1,127 @@
+#!/bin/bash
+
+if [ $# -lt 4 ]; then
+	echo "usage: $0 (check|update) cert chain ocsp_der_out" >&2
+	echo "   or: $0 sustain cert chain ocsp_der_out [update_callback and arguments]..." >&2
+	exit 1
+fi
+
+op="$1"
+shift
+
+cert="$1"
+shift
+
+chain="$1"
+shift
+
+ocsp_file="$1"
+shift
+
+get_next_update_time() {
+	# -d- assummes 'now' if input is empty, -d$value does not and fails (as desired)
+	date -d"$(openssl ocsp -respin "$1" -resp_text -noverify | sed -nE 's/^.*Next Update:\s*//p')" +%s
+}
+
+do_check() {
+	if [ ! -f "$ocsp_file" ]; then
+		return 1
+	fi
+
+	resp_serial="$(openssl ocsp -respin "$ocsp_file" -resp_text -noverify | sed -nE 's/^.*Serial Number:\s*//p')"
+	cert_serial="$(openssl x509 -serial -noout -in "$cert" | cut -f2 -d=)"
+
+	if ! grep -q "$cert_serial" <<< "$resp_serial"; then
+		echo "ocsp response for $resp_serial doesn't contain $cert_serial" >&2
+		return 1
+	fi
+
+	next_update="$(get_next_update_time "$ocsp_file")"
+	if [ "$next_update" -lt "$(date +%s)" ]; then
+		return 1
+	fi
+
+	echo "$next_update"
+}
+
+do_update() {
+	uri="$(openssl x509 -ocsp_uri -in "$cert" -noout)"
+
+	verify_opts=(-VAfile "$chain")
+	#verify_opts=(-noverify)
+
+	openssl ocsp -issuer "$chain" -cert "$cert" -respout "$ocsp_file" "${verify_opts[@]}" -no_nonce -url "$uri" -header Host "$(sed -nE 's/^.*:\/\///p' <<< "$uri")" >/dev/null
+
+	# example output:
+	# Response verify OK
+	# cert.pem: good
+	#         This Update: Jun 10 23:00:00 2022 GMT
+	#         Next Update: Jun 17 22:59:58 2022 GMT
+
+	do_check
+}
+
+do_sustain() {
+	# request next ocsp response x seconds before expiry.
+	# -> try to make sure ocsp_file is always valid for at least x more
+	# seconds.
+	PRELOAD_SECONDS="${PRELOAD_SECONDS-7200}"
+
+	remaining_seconds() {
+		local next_update="$1"
+		local now="$(date +%s)"
+
+		echo "$(( next_update - now ))"
+	}
+
+	if next_update="$(do_check)"; then
+		remaining="$(remaining_seconds "$next_update")"
+	else
+		remaining=0
+	fi
+
+
+	while true; do
+		sleep_for="$(( remaining - PRELOAD_SECONDS ))"
+		if [ "$sleep_for" -gt 0 ]; then
+			sleep "$sleep_for"
+		fi
+
+		if ! next_update="$(do_update)"; then
+			echo "update failed, retrying in one minute" >&2
+			sleep 60
+			continue
+		fi
+
+		remaining="$(remaining_seconds "$next_update")"
+		if [ "$remaining" -lt 0 ]; then
+			echo "warning: fresh ocsp response with short validity - backing off" >&2
+			# avoid busy-looping
+			sleep 600
+			continue
+		fi
+
+		if [ $# -gt 0 ]; then
+			( "$@" "$ocsp_file" "$next_update" & ) &
+		fi
+	done
+}
+
+case "$op" in
+update)
+	do_update
+	;;
+check)
+	do_check
+	;;
+sustain)
+	# if you're unhappy about sleep:
+	# next_update="$(..update..)"
+	# systemd-run --on-calendar=@"$(( next_update - 7200))" ..
+
+	do_sustain "$@"
+	;;
+*)
+	echo "unknown op \"$op\"" >&2
+	exit 1
+esac

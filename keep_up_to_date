@@ -1,0 +1,48 @@
+#!/bin/bash -e
+
+# request next ocsp response x seconds before expiry.
+# e.g. try to make sure ocsp_file is always valid for at least x more
+# seconds.
+PRELOAD_SECONDS="${PRELOAD_SECONDS-7200}"
+
+dir="$1"
+shift
+
+ocsp_file="$1"
+shift
+
+letsencrypt_ocsp() {
+	"$(basename "$0")"/letsencrypt_ocsp "$@"
+}
+
+remaining_seconds() {
+	local next_update="$1"
+	local now="$(date +%s)"
+
+	echo "$(( next_update - now ))"
+}
+
+remaining="$(remaining_seconds "$(letsencrypt_ocsp check "$dir" "$ocsp_file")")"
+
+while true; do
+	remaining="$(( remaining - PRELOAD_SECONDS ))"
+
+	if [ "$remaining" -lt 0 ]; then
+		echo "warning: fresh ocsp response with short validity" >&2
+		# avoid busy-looping
+		remaining=600
+	fi
+
+	if [ "$remaining" -gt 0 ]; then
+		sleep "$remaining"
+	fi
+
+	next_update="$(letsencrypt_ocsp update "$dir" "$ocsp_file")"
+	remaining="$(remaining_seconds "$next_update")"
+
+	if [ $# -gt 0 ]; then
+		( "$@" "$ocsp_file" "$next_update" & ) &
+	fi
+done
+
+# systemd-run --on-calendar=@"$(( next_update - 7200))"

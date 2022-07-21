@@ -50,7 +50,8 @@ do_update() {
 	verify_opts=(-VAfile "$chain")
 	#verify_opts=(-noverify)
 
-	openssl ocsp -issuer "$chain" -cert "$cert" -respout "$ocsp_file" "${verify_opts[@]}" -no_nonce -url "$uri" >/dev/null
+	# TODO looks like Host is not always automatically
+	openssl ocsp -issuer "$chain" -cert "$cert" -respout "$ocsp_file" "${verify_opts[@]}" -no_nonce -url "$uri" -header Host "$(sed -nE 's/^.*:\/\///p' <<< "$uri")" >/dev/null
 
 	# example output:
 	# Response verify OK

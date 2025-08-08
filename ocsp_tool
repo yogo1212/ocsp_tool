@@ -28,6 +28,13 @@ do_check() {
 		return 1
 	fi
 
+	if [ ! -s "$ocsp_file" ]; then
+		# ocsp is unsupported but everything is working.
+		# use the cert's notAfter
+		date -d"$(openssl x509 -enddate -noout -in "$cert" | sed -E 's/^.*=//')" '+%s'
+		return 0
+	fi
+
 	resp_serial="$(openssl ocsp -respin "$ocsp_file" -resp_text -noverify | sed -nE 's/^.*Serial Number:\s*//p')"
 	cert_serial="$(openssl x509 -serial -noout -in "$cert" | cut -f2 -d=)"
 
@@ -46,6 +53,12 @@ do_check() {
 
 do_update() {
 	uri="$(openssl x509 -ocsp_uri -in "$cert" -noout)"
+
+	if [ -z "$uri" ]; then
+		echo "cert doesn't have a OCSP url" >&2
+		truncate -s 0 "$ocsp_file"
+		return 0
+	fi
 
 	verify_opts=(-VAfile "$chain")
 	#verify_opts=(-noverify)
